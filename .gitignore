@@ -1,0 +1,36 @@
+# Entorno virtual
+entorno/
+
+# Token secreto
+.env
+
+# Modelos de IA (muy pesados)
+models/
+
+# Build de PyInstaller
+build_instalador/
+
+# Instalador compilado (muy pesado)
+instalador/salida/
+
+# Archivos de entrada y salida de transcripciones
+input/
+output/
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Shortcuts
+*.lnk
