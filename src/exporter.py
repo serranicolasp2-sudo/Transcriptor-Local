@@ -49,10 +49,14 @@ def generar_srt(segments: List[Dict[str, Any]], output_path: Path, speaker_mappi
 
 
 def generar_docx(segments: List[Dict[str, Any]], output_path: Path, titulo: str = "Transcripción", speaker_mapping: Optional[Dict[str, str]] = None) -> Path:
-    """Genera documento DOCX profesional con estilos legibles."""
+    """Genera documento DOCX profesional con estilos legibles, tabla estadística y metadatos."""
     try:
         from docx import Document
         from docx.shared import Pt, RGBColor, Inches
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.enum.table import WD_TABLE_ALIGNMENT
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import nsdecls
     except ImportError:
         return output_path
 
@@ -68,24 +72,126 @@ def generar_docx(segments: List[Dict[str, Any]], output_path: Path, titulo: str 
 
     # Título principal
     h = doc.add_heading(titulo, level=1)
-    
+    h.paragraph_format.space_after = Pt(2)
+
+    # Subtítulo institucional
+    p_sub = doc.add_paragraph()
+    r_sub = p_sub.add_run("Transcriptor Local · Tu Tiendita IA (tutiendita-ia.store)")
+    r_sub.font.size = Pt(9.5)
+    r_sub.font.color.rgb = RGBColor(120, 130, 150)
+    p_sub.paragraph_format.space_after = Pt(12)
+
+    # Calcular estadísticas de participación por hablante
+    stats: Dict[str, Dict[str, Any]] = {}
+    total_tiempo_habla = 0.0
+
+    for seg in segments:
+        spk_raw = seg.get("speaker", "SPEAKER 01")
+        spk_name = aplicar_mapeo_hablante(spk_raw, speaker_mapping)
+        dur = max(0.0, float(seg.get("end", 0.0)) - float(seg.get("start", 0.0)))
+        if spk_name not in stats:
+            stats[spk_name] = {"duracion": 0.0, "intervenciones": 0}
+        stats[spk_name]["duracion"] += dur
+        stats[spk_name]["intervenciones"] += 1
+        total_tiempo_habla += dur
+
+    # Tabla resumen si hay datos válidos
+    if stats and total_tiempo_habla > 0:
+        h_stats = doc.add_heading("Distribución de Habla por Participante", level=2)
+        h_stats.paragraph_format.space_before = Pt(8)
+        h_stats.paragraph_format.space_after = Pt(6)
+
+        table = doc.add_table(rows=1, cols=4)
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.autofit = False
+
+        headers = ["Participante", "Tiempo Total", "Participación (%)", "Intervenciones"]
+        col_widths = [Inches(2.5), Inches(1.3), Inches(1.4), Inches(1.3)]
+
+        hdr_row = table.rows[0]
+        for idx, name in enumerate(headers):
+            cell = hdr_row.cells[idx]
+            cell.width = col_widths[idx]
+            cell._tc.get_or_add_tcPr().append(parse_xml(r'<w:shd {} w:fill="1E3C96"/>'.format(nsdecls('w'))))
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER if idx > 0 else WD_ALIGN_PARAGRAPH.LEFT
+            r = p.add_run(name)
+            r.bold = True
+            r.font.size = Pt(9.5)
+            r.font.color.rgb = RGBColor(255, 255, 255)
+
+        sorted_speakers = sorted(stats.items(), key=lambda x: x[1]["duracion"], reverse=True)
+        for spk_name, info in sorted_speakers:
+            row_cells = table.add_row().cells
+            for idx in range(4):
+                row_cells[idx].width = col_widths[idx]
+                row_cells[idx]._tc.get_or_add_tcPr().append(parse_xml(r'<w:shd {} w:fill="F4F6FB"/>'.format(nsdecls('w'))))
+
+            # Participante
+            p0 = row_cells[0].paragraphs[0]
+            r0 = p0.add_run(spk_name)
+            r0.bold = True
+            r0.font.size = Pt(9.5)
+            r0.font.color.rgb = RGBColor(22, 32, 90)
+
+            # Tiempo Total
+            p1 = row_cells[1].paragraphs[0]
+            p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            r1 = p1.add_run(formatear_tiempo(info["duracion"]))
+            r1.font.size = Pt(9.5)
+
+            # Porcentaje
+            porc = (info["duracion"] / total_tiempo_habla) * 100
+            p2 = row_cells[2].paragraphs[0]
+            p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            r2 = p2.add_run(f"{porc:.1f}%")
+            r2.font.size = Pt(9.5)
+
+            # Intervenciones
+            p3 = row_cells[3].paragraphs[0]
+            p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            r3 = p3.add_run(str(info["intervenciones"]))
+            r3.font.size = Pt(9.5)
+
+        p_space = doc.add_paragraph()
+        p_space.paragraph_format.space_before = Pt(10)
+        p_space.paragraph_format.space_after = Pt(2)
+
+        h_trans = doc.add_heading("Transcripción Completa", level=2)
+        h_trans.paragraph_format.space_after = Pt(8)
+
+    # Paleta de colores para los hablantes (estilo Tu Tiendita IA)
+    colores_hablantes = [
+        RGBColor(30, 60, 150),   # Azul Birome
+        RGBColor(190, 50, 75),   # Malvón
+        RGBColor(170, 115, 20),  # Yema tostado
+        RGBColor(40, 120, 120),  # Petróleo
+    ]
+    speaker_color_map: Dict[str, RGBColor] = {}
+    next_color_idx = 0
+
     current_speaker = None
     first_ts = "00:00:00"
     accumulated_texts = []
 
     def flush_paragraph():
-        nonlocal current_speaker, first_ts, accumulated_texts
+        nonlocal current_speaker, first_ts, accumulated_texts, next_color_idx
         if current_speaker is not None and accumulated_texts:
             p = doc.add_paragraph()
             p.paragraph_format.space_after = Pt(8)
             p.paragraph_format.line_spacing = 1.15
             
-            # Nombre de hablante + timestamp en negrita y color azul institucional
+            # Nombre de hablante + timestamp en color temático asignado
             display_speaker = aplicar_mapeo_hablante(current_speaker, speaker_mapping)
+            if display_speaker not in speaker_color_map:
+                speaker_color_map[display_speaker] = colores_hablantes[next_color_idx % len(colores_hablantes)]
+                next_color_idx += 1
+            spk_color = speaker_color_map[display_speaker]
+
             run_header = p.add_run(f"[{first_ts}] {display_speaker}:\n")
             run_header.bold = True
             run_header.font.size = Pt(11)
-            run_header.font.color.rgb = RGBColor(0, 51, 102)
+            run_header.font.color.rgb = spk_color
             
             # Contenido de la intervención
             run_body = p.add_run(" ".join(accumulated_texts))

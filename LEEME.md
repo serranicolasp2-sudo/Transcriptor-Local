@@ -46,9 +46,10 @@ La aplicación viene empaquetada con los pesos y modelos locales de IA listos pa
    - Excelente comprensión del español con soporte para modismos y acentos rioplatenses, latinoamericanos y españoles, además de inglés y más de 90 idiomas adicionales.
    - Resistencia excepcional al ruido ambiente, música de fondo o reverberación.
 
-2. **Pyannote Audio 3.1 (Diarización Neural de Hablantes)**:
-   - El modelo de referencia a nivel mundial para segmentación de locutores.
+2. **Pyannote Speaker Diarization Community-1 / 3.1 (Diarización Neural de Hablantes)**:
+   - El modelo de referencia a nivel mundial para segmentación e identificación de locutores.
    - Analiza la huella acústica de cada voz a lo largo del tiempo y determina qué fragmento corresponde a cada uno de los 4 hablantes.
+   - Cuenta con soporte de fallback automático para compatibilidad garantizada.
 
 ---
 
@@ -86,7 +87,7 @@ La aplicación organiza todo el flujo de trabajo en 4 pestañas especializadas:
 ### 4. Pestaña "Configuración"
 - **Estado de Modelos Locales**: Verifica que los modelos de Whisper y Pyannote se encuentren descargados y listos en la carpeta `models/`.
 - **Token de Hugging Face (Opcional)**: Campo seguro por si deseás vincular tu propia cuenta para futuras actualizaciones de modelos.
-- **Aceleración por Hardware**: Muestra si el pipeline se está ejecutando sobre GPU NVIDIA (CUDA con soporte FP16/float16) o sobre CPU multihilo (float32).
+- **Especificaciones y Hardware**: Muestra la detección automática de procesador y memoria RAM del equipo, confirmando la ejecución sobre CPU optimizada con cuantización INT8 (faster-whisper / CTranslate2), sin requerir hardware NVIDIA adicional.
 - **Accesos Rápidos**: Botones para abrir en el Explorador de Windows las carpetas `input/`, `output/` y `logs/`.
 - **Diseño y Tema Visual**: Información institucional acreditando el tema visual de **Tu Tiendita IA** ([tutiendita-ia.store](https://tutiendita-ia.store)).
 
@@ -154,10 +155,10 @@ Por cada audio procesado, el Transcriptor Local genera automáticamente 4 archiv
 ## 💻 Requisitos del Sistema
 
 - **Sistema Operativo**: Windows 10 u 11 (64 bits).
-- **Procesador**: Intel Core i5 / i7 / i9 o AMD Ryzen 5 / 7 / 9 (mínimo 4 núcleos físicos).
-- **Memoria RAM**: 8 GB mínimo (16 GB recomendados para procesamiento fluido).
-- **Placa Gráfica (Opcional pero acelera notablemente)**: Placa NVIDIA GeForce GTX 1650, RTX 2060, 3060, 4060 o superior con drivers actualizados de CUDA. *(Si no tenés GPU NVIDIA, la app funciona perfectamente utilizando la CPU multihilo en modo float32).*
-- **Espacio en Disco**: ~5 GB libres para instalación y archivos temporales de procesamiento.
+- **Procesador**: Intel Core i5 / i7 / i9 o AMD Ryzen 5 / 7 / 9 (mínimo 4 núcleos físicos / 8 hilos recomendados).
+- **Memoria RAM**: 16 GB recomendados (mínimo 8 GB con memoria virtual activa; el pipeline completo con diarización y whisper large-v3-turbo consume aproximadamente ~10-11 GB en picos de inferencia).
+- **Placa Gráfica**: No requerida. El pipeline está optimizado para CPU multihilo con cuantización INT8 (`CTranslate2`), permitiendo alta velocidad (~0.96x RTF) en cualquier equipo estándar sin necesidad de GPUs dedicadas NVIDIA ni controladores CUDA.
+- **Espacio en Disco**: ~5 GB libres para instalación, modelos locales pre-empaquetados y archivos temporales de procesamiento.
 
 ---
 

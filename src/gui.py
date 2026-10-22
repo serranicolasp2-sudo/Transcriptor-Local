@@ -45,6 +45,38 @@ from src import tema
 tema.aplicar_tema_global()
 
 
+def _detectar_hardware_sistema() -> tuple:
+    """Detecta dinámicamente el procesador y la memoria RAM del equipo actual."""
+    import platform
+    cpu_name = platform.processor() or "Procesador x64"
+    if sys.platform == "win32":
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+            cpu_name = winreg.QueryValueEx(key, "ProcessorNameString")[0].strip()
+        except Exception:
+            pass
+
+    cores_fisicos = psutil.cpu_count(logical=False)
+    cores_logicos = psutil.cpu_count(logical=True)
+    if cores_fisicos and cores_logicos:
+        cpu_desc = f"{cpu_name} ({cores_fisicos} núcleos / {cores_logicos} hilos)"
+    elif cores_logicos:
+        cpu_desc = f"{cpu_name} ({cores_logicos} hilos)"
+    else:
+        cpu_desc = cpu_name
+
+    try:
+        mem = psutil.virtual_memory()
+        total_gb = mem.total / (1024 ** 3)
+        disp_gb = mem.available / (1024 ** 3)
+        ram_desc = f"{total_gb:.1f} GB (Disponible: {disp_gb:.1f} GB | Consumo estimado: ~11 GB)"
+    except Exception:
+        ram_desc = "No detectada (Recomendado: 16 GB)"
+
+    return cpu_desc, ram_desc
+
+
 class TranscriptorApp(ctk.CTk):
     """Ventana principal de la aplicación Transcriptor Local."""
 
@@ -866,12 +898,14 @@ class TranscriptorApp(ctk.CTk):
 
         ctk.CTkLabel(card_sys, text="Especificaciones del Motor y Hardware", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=2, padx=15, pady=(12, 8), sticky="w")
 
+        cpu_info, ram_info = _detectar_hardware_sistema()
         info_text = (
             "• Modelo Whisper: large-v3-turbo (CTranslate2, int8, VAD activo)\n"
-            "• Modelo Diarización: pyannote/speaker-diarization-community-1 (4 hablantes)\n"
-            "• Backend: CPU (AMD Ryzen 7 5700X3D, 8 núcleos / 16 hilos)\n"
-            "• Memoria RAM: 32 GB (Consumo estimado: ~11 GB)\n"
-            "• Factor de Tiempo Real (RTF): ~0.96x (Validado con Prueba.mp3)\n"
+            "• Modelo Diarización: pyannote/speaker-diarization-community-1 (hasta 4 hablantes)\n"
+            f"• Procesador detectado: {cpu_info}\n"
+            f"• Memoria RAM detectada: {ram_info}\n"
+            "• Modo de cómputo: CPU INT8 optimizada (sin dependencia de placa NVIDIA)\n"
+            "• Benchmark de referencia en desarrollo: Ryzen 7 5700X3D / 32 GB RAM @ RTF ~0.96x\n"
             "• Diseño y Tema Visual: Tu Tiendita IA (Sitio web oficial: tutiendita-ia.store)"
         )
         ctk.CTkLabel(card_sys, text=info_text, justify="left", font=ctk.CTkFont(size=12)).grid(row=1, column=0, columnspan=2, padx=15, pady=(0, 12), sticky="w")
