@@ -3,7 +3,8 @@
 """
 Motor de Transcripción y Diarización de Hablantes.
 Conserva estrictamente la pipeline validada:
-- faster-whisper (large-v3-turbo, CPU, int8, VAD activo, timestamps)
+- faster-whisper (large-v3-turbo en CPU con int8 por defecto; small / large-v3 y la placa NVIDIA
+  si se instalaron desde Configuración, ver src/componentes.py) con VAD activo y timestamps
 - pyannote.audio (speaker-diarization-community-1, CPU, 4 hablantes)
 - Tolerancia a fallos mediante checkpoints
 - Callback de progreso en tiempo real y soporte para cancelación
@@ -22,7 +23,13 @@ from typing import Callable, Optional, Dict, Any, List, Tuple
 
 import torch
 import soundfile as sf
-from faster_whisper import WhisperModel
+
+from src import componentes
+
+# Las DLL de NVIDIA (si se instaló el paquete) se registran antes de cargar el motor de Whisper.
+componentes.activar_aceleracion()
+
+from faster_whisper import WhisperModel  # noqa: E402
 from pyannote.audio import Pipeline
 
 from src.config import (
@@ -44,35 +51,52 @@ logger.setLevel(logging.INFO)
 
 _whisper_model: Optional[WhisperModel] = None
 _whisper_lock = threading.Lock()
+_motor: Optional[componentes.Motor] = None
+
+
+def motor_actual() -> componentes.Motor:
+    """Modelo y dispositivo de este proceso. Se eligen una vez: los cambios de Configuración se aplican al reiniciar."""
+    global _motor
+    if _motor is None:
+        _motor = componentes.elegir_motor()
+    return _motor
+
+
+def _crear_modelo(motor: componentes.Motor) -> WhisperModel:
+    return WhisperModel(
+        motor.ruta,
+        device=motor.dispositivo,
+        compute_type=motor.tipo_calculo,
+        download_root=str(MODELS_DIR),
+    )
 
 
 def get_whisper_model() -> WhisperModel:
-    """Carga large-v3-turbo una sola vez por proceso. Seguro entre hilos y con soporte dinámico de aceleración."""
-    global _whisper_model
+    """Carga el modelo elegido una sola vez por proceso. Seguro entre hilos. Si la placa falla, sigue en CPU."""
+    global _whisper_model, _motor
     if _whisper_model is None:
         with _whisper_lock:
             if _whisper_model is None:       # revisá de nuevo con el lock tomado
-                dev, comp = resolver_dispositivo_computo()
+                motor = motor_actual()
                 try:
-                    logger.info(f"Cargando WhisperModel (large-v3-turbo) en dispositivo: {dev} ({comp})...")
-                    _whisper_model = WhisperModel(
-                        "large-v3-turbo",
-                        device=dev,
-                        compute_type=comp,
-                        download_root=str(MODELS_DIR),
-                    )
+                    _whisper_model = _crear_modelo(motor)
                 except Exception as e:
-                    if dev != "cpu":
-                        logger.warning(f"Fallo al inicializar Whisper en {dev}: {e}. Fallback automático a CPU int8...")
-                        _whisper_model = WhisperModel(
-                            "large-v3-turbo",
-                            device="cpu",
-                            compute_type="int8",
-                            download_root=str(MODELS_DIR),
-                        )
-                    else:
-                        raise e
+                    if motor.dispositivo != "cuda":
+                        raise
+                    logger.warning(f"No se pudo cargar Whisper en la placa NVIDIA ({e}). Se usa la CPU.")
+                    _motor = componentes.motor_cpu(motor.modelo)
+                    _whisper_model = _crear_modelo(_motor)
     return _whisper_model
+
+
+def _pasar_a_cpu(error: Exception) -> None:
+    """La placa falló en plena transcripción: se descarta el modelo de GPU y el próximo intento usa la CPU."""
+    global _whisper_model, _motor
+    with _whisper_lock:
+        logger.warning(f"Falló la transcripción en la placa NVIDIA ({error}). Se reintenta con la CPU.")
+        _motor = componentes.motor_cpu(motor_actual().modelo)
+        _whisper_model = None
+        gc.collect()
 
 
 def convertir_a_wav_16k(
@@ -185,12 +209,39 @@ def transcribir_whisper(
     idioma: str | None = "es",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
-    Ejecuta la transcripción con faster-whisper (large-v3-turbo) en CPU con cuantización int8.
+    Ejecuta la transcripción con faster-whisper con el motor elegido (ver motor_actual).
     Calcula el progreso real a partir de los timestamps de cada segmento generado.
+    Si la placa NVIDIA falla en el medio, vuelve a empezar con la CPU en vez de cortar el proceso.
     """
+    try:
+        return _transcribir_con_motor(wav_path, duracion_total, progress_callback, cancel_event, idioma)
+    except InterruptedError:
+        raise
+    except Exception as e:
+        if motor_actual().dispositivo != "cuda":
+            raise
+        _pasar_a_cpu(e)
+        if progress_callback:
+            progress_callback(
+                stage="La placa de video falló: sigo con el procesador...",
+                fraction=0.05,
+                is_estimated=False,
+                processed_seconds=0.0,
+                message=f"Error de la placa NVIDIA: {e}",
+            )
+        return _transcribir_con_motor(wav_path, duracion_total, progress_callback, cancel_event, idioma)
+
+
+def _transcribir_con_motor(
+    wav_path: Path,
+    duracion_total: float,
+    progress_callback: Optional[Callable],
+    cancel_event: Optional[threading.Event],
+    idioma: str | None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     if progress_callback:
         progress_callback(
-            stage="Cargando modelo Whisper (large-v3-turbo)...",
+            stage=f"Cargando modelo Whisper ({motor_actual().descripcion})...",
             fraction=0.05,
             is_estimated=False,
             processed_seconds=0.0,
@@ -211,8 +262,11 @@ def transcribir_whisper(
             message="Reconociendo voz y filtrando silencios (VAD)...",
         )
 
+    # Se le pasa el audio ya leído: si faster-whisper abre el archivo, usa PyAV, y algunas combinaciones de
+    # versiones fallan (faster-whisper 1.2.1 con av 19: "unexpected keyword argument 'metadata_errors'").
+    audio, _ = sf.read(str(wav_path), dtype="float32")
     segments_generator, info = model.transcribe(
-        str(wav_path),
+        audio,
         language=idioma,
         beam_size=5,
         vad_filter=True,
@@ -676,9 +730,9 @@ def ejecutar_pipeline_completo(
     metadata = {
         "archivo_original": str(audio_path),
         "duracion_audio_segundos": duracion_total,
-        "modelo_transcripcion": "large-v3-turbo (CTranslate2 int8)",
+        "modelo_transcripcion": f"{motor_actual().modelo} (CTranslate2 {motor_actual().tipo_calculo})",
         "modelo_diarizacion": "pyannote/speaker-diarization-community-1" if diarizar else "sin diarización",
-        "backend": "CPU (AMD Ryzen)",
+        "backend": "Placa NVIDIA (CUDA)" if motor_actual().dispositivo == "cuda" else "CPU",
         "hablantes_configurados": _desc_hablantes(
             _spec_hablantes(num_speakers, min_speakers, max_speakers)
         ) if diarizar else "sin diarización",

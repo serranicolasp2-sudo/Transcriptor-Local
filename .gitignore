@@ -34,3 +34,6 @@ Desktop.ini
 
 # Shortcuts
 *.lnk
+
+# Ajustes del usuario (modelo y placa elegidos en Configuración)
+ajustes.json

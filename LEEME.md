@@ -85,14 +85,9 @@ La aplicación organiza todo el flujo de trabajo en 4 pestañas especializadas:
 - Al presionar **"Aplicar Cambios Globales"**, el programa renombra automáticamente a los interlocutores en los cientos de segmentos del proyecto y re-exporta los archivos finales al instante.
 
 ### 4. Pestaña "Configuración"
-- **Estado de Modelos Locales**: Verifica que los modelos de Whisper y Pyannote se encuentren descargados y listos en la carpeta `models/`.
+- **Motor y Hardware de esta PC**: Muestra con qué se está transcribiendo (modelo, CPU o placa NVIDIA) y el procesador, la RAM y la placa detectados en tu equipo.
+- **Modelos y Aceleración**: Descargá desde la misma app otros modelos de Whisper y la aceleración NVIDIA, con barra de progreso (ver [Modelos y aceleración opcionales](#-modelos-y-aceleración-opcionales)).
 - **Token de Hugging Face (Opcional)**: Campo seguro por si deseás vincular tu propia cuenta para futuras actualizaciones de modelos.
-- **Especificaciones y Hardware**: Muestra la detección automática de procesador y memoria RAM del equipo, confirmando la ejecución sobre CPU optimizada con cuantización INT8 (faster-whisper / CTranslate2).
-- **Aceleración por Hardware & Módulos Opcionales**: 
-  - La versión estándar incluye preinstalado el motor **Universal CPU INT8**, 100% offline y listo para transcribir sin requerir placas dedicadas ni drivers adicionales.
-  - La aplicación detecta automáticamente si el usuario cuenta con placas físicas **NVIDIA (GeForce/RTX)** o **AMD Radeon**.
-  - Si el usuario desea exprimir su GPU, puede presionar el botón de descarga del acelerador correspondiente: la aplicación descarga el paquete oficial en segundo plano (con barra de progreso en vivo vía GitHub Releases), lo instala automáticamente en la carpeta `addons/` y asiste en el reinicio del programa.
-  - Incluye tolerancia a fallos con **fallback automático a CPU** si la GPU se queda sin memoria VRAM o reporta inconsistencias de drivers.
 - **Accesos Rápidos**: Botones para abrir en el Explorador de Windows las carpetas `input/`, `output/` y `logs/`.
 - **Diseño y Tema Visual**: Información institucional acreditando el tema visual de **Tu Tiendita IA** ([tutiendita-ia.store](https://tutiendita-ia.store)).
 
@@ -144,6 +139,43 @@ Por cada audio procesado, el Transcriptor Local genera automáticamente 4 archiv
 
 ---
 
+## ⚡ Modelos y aceleración opcionales
+
+La versión estándar viene lista para usar: **Whisper large-v3-turbo en la CPU**. Desde **Configuración → Modelos y Aceleración** se pueden sumar, con un clic:
+
+| Componente | Descarga | Para qué |
+|---|---|---|
+| **Whisper small** | 486 MB | Más rápido y liviano. Para equipos con 8 GB de RAM o audios muy largos. |
+| **Whisper large-v3** | 3,1 GB | Máxima precisión. Bastante más lento y pide más memoria. |
+| **Aceleración NVIDIA** | 568 MB | Transcribe con la placa de video (GeForce GTX 16xx / RTX, driver actualizado). |
+
+Cómo funciona:
+
+- **Fuentes gratuitas y oficiales:** los modelos salen de Hugging Face (los mismos que usa faster-whisper) y la aceleración NVIDIA del paquete oficial `nvidia-cublas-cu12` de PyPI. Cada archivo tiene la dirección, el tamaño y la huella SHA-256 fijados en `src/componentes.py`: si lo que llega no coincide, no se instala.
+- **En segundo plano y con barra de progreso**, con velocidad y tiempo restante. Se puede pausar: si se corta internet o cerrás la app, sigue desde donde quedó.
+- **Al terminar pide reiniciar la aplicación** y, al volver a abrirla, ya usa lo que descargaste. Lo elegido se puede cambiar en "Modelo a usar" y "Usar la placa NVIDIA".
+- **Si la placa falla** (driver viejo, poca memoria de video), la transcripción sigue sola con la CPU y lo avisa.
+- Todo se guarda en `models/`, que se borra al desinstalar. Cada componente se puede eliminar desde la misma pantalla.
+- La diarización (pyannote) sigue en la CPU: la placa acelera la parte de Whisper, que es la más pesada.
+
+**Placas AMD Radeon:** el motor (CTranslate2) tiene desde 2026 una versión para ROCm, pero todavía da resultados erróneos en algunas placas. Queda en evaluación.
+
+### Desde el código fuente
+
+Lo mismo se puede hacer desde la terminal, con el entorno activado:
+
+```bash
+python -m src.componentes listar                    # qué hay instalado y qué se usa al abrir
+python -m src.componentes instalar whisper-small    # o whisper-large-v3, nvidia-cuda12
+python -m src.componentes usar small                # modelo a usar
+python -m src.componentes gpu si                    # usar la placa NVIDIA (si / no)
+python -m src.componentes eliminar whisper-small
+```
+
+La aceleración NVIDIA necesita **CTranslate2 4.6.3 o posterior**: desde esa versión ya no hace falta cuDNN, solo cuBLAS.
+
+---
+
 ## 📦 Paquetes de Distribución
 
 1. **Instalador Completo (`Transcriptor Instalador 1.0.exe` — 1.77 GB)**:
@@ -160,10 +192,11 @@ Por cada audio procesado, el Transcriptor Local genera automáticamente 4 archiv
 ## 💻 Requisitos del Sistema
 
 - **Sistema Operativo**: Windows 10 u 11 (64 bits).
-- **Procesador**: Intel Core i5 / i7 / i9 o AMD Ryzen 5 / 7 / 9 (mínimo 4 núcleos físicos / 8 hilos recomendados).
-- **Memoria RAM**: 16 GB recomendados (mínimo 8 GB con memoria virtual activa; el pipeline completo con diarización y whisper large-v3-turbo consume aproximadamente ~10-11 GB en picos de inferencia).
-- **Placa Gráfica**: No requerida. El pipeline está optimizado para CPU multihilo con cuantización INT8 (`CTranslate2`), permitiendo alta velocidad (~0.96x RTF) en cualquier equipo estándar sin necesidad de GPUs dedicadas NVIDIA ni controladores CUDA.
-- **Espacio en Disco**: ~5 GB libres para instalación, modelos locales pre-empaquetados y archivos temporales de procesamiento.
+- **Procesador**: Intel Core i5 / i7 / i9 o AMD Ryzen 5 / 7 / 9 (mínimo 4 núcleos físicos).
+- **Memoria RAM**: 8 GB mínimo (16 GB recomendados para procesamiento fluido con large-v3-turbo; con 8 GB podés descargar Whisper small desde la app).
+- **Placa Gráfica (Opcional)**: la versión estándar transcribe con la CPU. Para usar una NVIDIA GeForce GTX 1650, RTX 2060, 3060, 4060 o superior, descargá la **Aceleración NVIDIA** desde Configuración (568 MB) con drivers de NVIDIA actualizados.
+- **Referencia medida**: en un Ryzen 7 5700X3D con 32 GB, large-v3-turbo en CPU tarda ~0,96× la duración del audio y usa ~11 GB de RAM.
+- **Espacio en Disco**: ~5 GB libres para instalación y archivos temporales de procesamiento.
 
 ---
 
