@@ -87,7 +87,12 @@ La aplicación organiza todo el flujo de trabajo en 4 pestañas especializadas:
 ### 4. Pestaña "Configuración"
 - **Estado de Modelos Locales**: Verifica que los modelos de Whisper y Pyannote se encuentren descargados y listos en la carpeta `models/`.
 - **Token de Hugging Face (Opcional)**: Campo seguro por si deseás vincular tu propia cuenta para futuras actualizaciones de modelos.
-- **Especificaciones y Hardware**: Muestra la detección automática de procesador y memoria RAM del equipo, confirmando la ejecución sobre CPU optimizada con cuantización INT8 (faster-whisper / CTranslate2), sin requerir hardware NVIDIA adicional.
+- **Especificaciones y Hardware**: Muestra la detección automática de procesador y memoria RAM del equipo, confirmando la ejecución sobre CPU optimizada con cuantización INT8 (faster-whisper / CTranslate2).
+- **Aceleración por Hardware & Módulos Opcionales**: 
+  - La versión estándar incluye preinstalado el motor **Universal CPU INT8**, 100% offline y listo para transcribir sin requerir placas dedicadas ni drivers adicionales.
+  - La aplicación detecta automáticamente si el usuario cuenta con placas físicas **NVIDIA (GeForce/RTX)** o **AMD Radeon**.
+  - Si el usuario desea exprimir su GPU, puede presionar el botón de descarga del acelerador correspondiente: la aplicación descarga el paquete oficial en segundo plano (con barra de progreso en vivo vía GitHub Releases), lo instala automáticamente en la carpeta `addons/` y asiste en el reinicio del programa.
+  - Incluye tolerancia a fallos con **fallback automático a CPU** si la GPU se queda sin memoria VRAM o reporta inconsistencias de drivers.
 - **Accesos Rápidos**: Botones para abrir en el Explorador de Windows las carpetas `input/`, `output/` y `logs/`.
 - **Diseño y Tema Visual**: Información institucional acreditando el tema visual de **Tu Tiendita IA** ([tutiendita-ia.store](https://tutiendita-ia.store)).
 

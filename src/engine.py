@@ -37,6 +37,7 @@ from src.config import (
     formatear_tiempo,
 )
 from src.exporter import exportar_todo
+from src.acelerador import resolver_dispositivo_computo
 
 logger = logging.getLogger("TranscriptorEngine")
 logger.setLevel(logging.INFO)
@@ -46,17 +47,31 @@ _whisper_lock = threading.Lock()
 
 
 def get_whisper_model() -> WhisperModel:
-    """Carga large-v3-turbo una sola vez por proceso. Seguro entre hilos."""
+    """Carga large-v3-turbo una sola vez por proceso. Seguro entre hilos y con soporte dinámico de aceleración."""
     global _whisper_model
     if _whisper_model is None:
         with _whisper_lock:
             if _whisper_model is None:       # revisá de nuevo con el lock tomado
-                _whisper_model = WhisperModel(
-                    "large-v3-turbo",
-                    device="cpu",
-                    compute_type="int8",
-                    download_root=str(MODELS_DIR),
-                )
+                dev, comp = resolver_dispositivo_computo()
+                try:
+                    logger.info(f"Cargando WhisperModel (large-v3-turbo) en dispositivo: {dev} ({comp})...")
+                    _whisper_model = WhisperModel(
+                        "large-v3-turbo",
+                        device=dev,
+                        compute_type=comp,
+                        download_root=str(MODELS_DIR),
+                    )
+                except Exception as e:
+                    if dev != "cpu":
+                        logger.warning(f"Fallo al inicializar Whisper en {dev}: {e}. Fallback automático a CPU int8...")
+                        _whisper_model = WhisperModel(
+                            "large-v3-turbo",
+                            device="cpu",
+                            compute_type="int8",
+                            download_root=str(MODELS_DIR),
+                        )
+                    else:
+                        raise e
     return _whisper_model
 
 
@@ -320,7 +335,14 @@ def diarizar_pyannote(
         logger.warning(f"Fallo al cargar {model_id}: {e}. Intentando pyannote/speaker-diarization-3.1...")
         pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
 
-    pipeline.to(torch.device("cpu"))
+    dev, _ = resolver_dispositivo_computo()
+    target_device = torch.device(dev if dev == "cuda" else "cpu")
+    try:
+        pipeline.to(target_device)
+        logger.info(f"Pipeline de diarización asignado a {target_device}.")
+    except Exception as e:
+        logger.warning(f"No se pudo asignar diarización a {target_device}: {e}. Fallback a CPU.")
+        pipeline.to(torch.device("cpu"))
 
     if cancel_event and cancel_event.is_set():
         del pipeline

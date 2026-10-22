@@ -40,6 +40,14 @@ from src.exporter import (
 )
 from src.player import AudioPlayer
 from src import tema
+from src.acelerador import (
+    detectar_gpus_fisicas,
+    hay_cuda_disponible,
+    hay_directml_disponible,
+    obtener_modo_guardado,
+    guardar_modo_guardado,
+    descargar_e_instalar_addon,
+)
 
 # Configuración visual: paleta "Tu Tiendita IA" (src/tema.py + recursos/tema_tutiendita.json)
 tema.aplicar_tema_global()
@@ -910,9 +918,63 @@ class TranscriptorApp(ctk.CTk):
         )
         ctk.CTkLabel(card_sys, text=info_text, justify="left", font=ctk.CTkFont(size=12)).grid(row=1, column=0, columnspan=2, padx=15, pady=(0, 12), sticky="w")
 
-        # Card 2: Hugging Face Token
+        # Card 2: Aceleración por Hardware y Módulos Descargables
+        card_acc = ctk.CTkFrame(tab, corner_radius=12, border_width=1)
+        card_acc.grid(row=1, column=0, padx=15, pady=10, sticky="ew")
+        card_acc.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(card_acc, text="Aceleración por Hardware & Módulos Opcionales", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=3, padx=15, pady=(12, 6), sticky="w")
+
+        modo_actual = obtener_modo_guardado()
+        txt_modo = "CPU INT8 (Predeterminado)" if modo_actual == "cpu" else ("NVIDIA CUDA (GPU)" if modo_actual == "cuda" else "AMD Radeon (DirectML)")
+
+        self.lbl_acc_actual = ctk.CTkLabel(
+            card_acc,
+            text=f"Modo configurado: {txt_modo} | CUDA: {'✅' if hay_cuda_disponible() else '❌'} | DirectML: {'✅' if hay_directml_disponible() else '❌'}",
+            font=ctk.CTkFont(size=12),
+            text_color=tema.YEMA if (modo_actual != "cpu") else tema.PLATA,
+        )
+        self.lbl_acc_actual.grid(row=1, column=0, columnspan=3, padx=15, pady=(0, 8), sticky="w")
+
+        gpus = detectar_gpus_fisicas()
+        tiene_nvidia = any(g["tipo"] == "nvidia" for g in gpus)
+        tiene_amd = any(g["tipo"] == "amd" for g in gpus)
+
+        row_idx = 2
+        lbl_nv = f"GPU NVIDIA: {'Detectada' if tiene_nvidia else 'No detectada'} — " + ("Instalado ✅" if hay_cuda_disponible() else "Módulo no descargado ⚡")
+        ctk.CTkLabel(card_acc, text=lbl_nv, font=ctk.CTkFont(size=12)).grid(row=row_idx, column=0, columnspan=2, padx=15, pady=4, sticky="w")
+        if not hay_cuda_disponible():
+            self.btn_dl_cuda = ctk.CTkButton(
+                card_acc,
+                text="📥 Descargar CUDA (~1.8 GB)",
+                width=180,
+                height=28,
+                command=lambda: self._iniciar_descarga_addon("nvidia"),
+            )
+            self.btn_dl_cuda.grid(row=row_idx, column=2, padx=(5, 15), pady=4, sticky="e")
+        row_idx += 1
+
+        nombre_amd = [g['nombre'] for g in gpus if g['tipo'] == 'amd'][0] if tiene_amd else 'AMD Radeon'
+        lbl_amd = f"GPU AMD: {'Detectada (' + nombre_amd + ')' if tiene_amd else 'No detectada'} — " + ("Instalado ✅" if hay_directml_disponible() else "Módulo no descargado ⚡")
+        ctk.CTkLabel(card_acc, text=lbl_amd, font=ctk.CTkFont(size=12)).grid(row=row_idx, column=0, columnspan=2, padx=15, pady=4, sticky="w")
+        if not hay_directml_disponible():
+            self.btn_dl_amd = ctk.CTkButton(
+                card_acc,
+                text="📥 Descargar DirectML (~120 MB)",
+                width=180,
+                height=28,
+                command=lambda: self._iniciar_descarga_addon("amd"),
+            )
+            self.btn_dl_amd.grid(row=row_idx, column=2, padx=(5, 15), pady=4, sticky="e")
+        row_idx += 1
+
+        self.prog_bar_addon = ctk.CTkProgressBar(card_acc, height=12)
+        self.prog_bar_addon.set(0.0)
+        self.lbl_addon_msg = ctk.CTkLabel(card_acc, text="", font=ctk.CTkFont(size=11), text_color=tema.PLATA)
+
+        # Card 3: Hugging Face Token
         card_token = ctk.CTkFrame(tab, corner_radius=12, border_width=1)
-        card_token.grid(row=1, column=0, padx=15, pady=10, sticky="ew")
+        card_token.grid(row=2, column=0, padx=15, pady=10, sticky="ew")
         card_token.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(card_token, text="Token de Hugging Face (Seguro, local en .env)", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=3, padx=15, pady=(12, 6), sticky="w")
@@ -935,9 +997,9 @@ class TranscriptorApp(ctk.CTk):
         btn_save_token = ctk.CTkButton(card_token, text="Guardar en .env", width=120, command=self._guardar_nuevo_token)
         btn_save_token.grid(row=2, column=2, padx=(5, 15), pady=(0, 12))
 
-        # Card 3: Carpetas de Trabajo
+        # Card 4: Carpetas de Trabajo
         card_dirs = ctk.CTkFrame(tab, corner_radius=12, border_width=1)
-        card_dirs.grid(row=2, column=0, padx=15, pady=10, sticky="ew")
+        card_dirs.grid(row=3, column=0, padx=15, pady=10, sticky="ew")
         card_dirs.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         ctk.CTkLabel(card_dirs, text="Carpetas del Proyecto", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=4, padx=15, pady=(12, 10), sticky="w")
@@ -946,6 +1008,55 @@ class TranscriptorApp(ctk.CTk):
         ctk.CTkButton(card_dirs, text="📂 Carpeta Output", height=32, command=lambda: os.startfile(str(OUTPUT_DIR))).grid(row=1, column=1, padx=8, pady=(0, 14), sticky="ew")
         ctk.CTkButton(card_dirs, text="📂 Carpeta Modelos", height=32, command=lambda: os.startfile(str(MODELS_DIR))).grid(row=1, column=2, padx=8, pady=(0, 14), sticky="ew")
         ctk.CTkButton(card_dirs, text="📂 Carpeta Logs", height=32, command=lambda: os.startfile(str(LOGS_DIR))).grid(row=1, column=3, padx=8, pady=(0, 14), sticky="ew")
+
+    def _iniciar_descarga_addon(self, tipo: str):
+        """Inicia la descarga e instalación del módulo en segundo plano con barra de progreso."""
+        if hasattr(self, "btn_dl_cuda"):
+            self.btn_dl_cuda.configure(state="disabled")
+        if hasattr(self, "btn_dl_amd"):
+            self.btn_dl_amd.configure(state="disabled")
+
+        self.prog_bar_addon.grid(row=4, column=0, columnspan=3, padx=15, pady=(8, 4), sticky="ew")
+        self.lbl_addon_msg.grid(row=5, column=0, columnspan=3, padx=15, pady=(0, 10), sticky="w")
+        self.prog_bar_addon.set(0.02)
+        self.lbl_addon_msg.configure(text=f"Conectando para descargar módulo {tipo.upper()}...")
+
+        def worker():
+            def cb(pct, msg):
+                self.after(0, lambda: self._actualizar_progreso_addon(pct, msg))
+            exito, mensaje = descargar_e_instalar_addon(tipo, progress_callback=cb)
+            self.after(0, lambda: self._finalizar_descarga_addon(exito, mensaje))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _actualizar_progreso_addon(self, pct: float, msg: str):
+        self.prog_bar_addon.set(pct)
+        self.lbl_addon_msg.configure(text=msg)
+
+    def _finalizar_descarga_addon(self, exito: bool, mensaje: str):
+        if hasattr(self, "btn_dl_cuda"):
+            self.btn_dl_cuda.configure(state="normal")
+        if hasattr(self, "btn_dl_amd"):
+            self.btn_dl_amd.configure(state="normal")
+
+        if exito:
+            resp = messagebox.askyesno(
+                "Instalación Exitosa",
+                f"{mensaje}\n\n¿Deseás reiniciar la aplicación ahora para activar el nuevo motor?"
+            )
+            if resp:
+                self._reiniciar_app()
+        else:
+            messagebox.showinfo("Módulo Opcional", mensaje)
+            self.lbl_addon_msg.configure(text="Podés continuar usando el motor CPU INT8 sin inconvenientes.")
+
+    def _reiniciar_app(self):
+        """Reinicia la aplicación para recargar librerías y DLLs del sistema."""
+        python_exe = sys.executable
+        args = [python_exe] + sys.argv if not getattr(sys, "frozen", False) else [python_exe]
+        subprocess.Popen(args)
+        self.destroy()
+        sys.exit(0)
 
     def _guardar_nuevo_token(self):
         t = self.entry_new_token.get().strip()

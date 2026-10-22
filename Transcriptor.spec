@@ -51,6 +51,7 @@ hidden_imports = [
     'src.exporter',
     'src.player',
     'src.gui',
+    'src.acelerador',
 ]
 
 for pkg in packages_to_scan:
