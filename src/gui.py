@@ -50,38 +50,6 @@ from src import tema
 tema.aplicar_tema_global()
 
 
-def _detectar_hardware_sistema() -> tuple:
-    """Detecta dinámicamente el procesador y la memoria RAM del equipo actual."""
-    import platform
-    cpu_name = platform.processor() or "Procesador x64"
-    if sys.platform == "win32":
-        try:
-            import winreg
-            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
-            cpu_name = winreg.QueryValueEx(key, "ProcessorNameString")[0].strip()
-        except Exception:
-            pass
-
-    cores_fisicos = psutil.cpu_count(logical=False)
-    cores_logicos = psutil.cpu_count(logical=True)
-    if cores_fisicos and cores_logicos:
-        cpu_desc = f"{cpu_name} ({cores_fisicos} núcleos / {cores_logicos} hilos)"
-    elif cores_logicos:
-        cpu_desc = f"{cpu_name} ({cores_logicos} hilos)"
-    else:
-        cpu_desc = cpu_name
-
-    try:
-        mem = psutil.virtual_memory()
-        total_gb = mem.total / (1024 ** 3)
-        disp_gb = mem.available / (1024 ** 3)
-        ram_desc = f"{total_gb:.1f} GB (Disponible: {disp_gb:.1f} GB | Consumo estimado: ~11 GB)"
-    except Exception:
-        ram_desc = "No detectada (Recomendado: 16 GB)"
-
-    return cpu_desc, ram_desc
-
-
 class TranscriptorApp(ctk.CTk):
     """Ventana principal de la aplicación Transcriptor Local."""
 

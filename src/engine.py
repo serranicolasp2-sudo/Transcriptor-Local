@@ -44,7 +44,6 @@ from src.config import (
     formatear_tiempo,
 )
 from src.exporter import exportar_todo
-from src.acelerador import resolver_dispositivo_computo
 
 logger = logging.getLogger("TranscriptorEngine")
 logger.setLevel(logging.INFO)
@@ -389,14 +388,9 @@ def diarizar_pyannote(
         logger.warning(f"Fallo al cargar {model_id}: {e}. Intentando pyannote/speaker-diarization-3.1...")
         pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=hf_token)
 
-    dev, _ = resolver_dispositivo_computo()
-    target_device = torch.device(dev if dev == "cuda" else "cpu")
-    try:
-        pipeline.to(target_device)
-        logger.info(f"Pipeline de diarización asignado a {target_device}.")
-    except Exception as e:
-        logger.warning(f"No se pudo asignar diarización a {target_device}: {e}. Fallback a CPU.")
-        pipeline.to(torch.device("cpu"))
+    # La diarización corre siempre en CPU: la app trae PyTorch para CPU, y usar la placa necesitaría PyTorch
+    # con CUDA (~2,5 GB más). La aceleración NVIDIA (src/componentes.py) es para Whisper, la parte más pesada.
+    pipeline.to(torch.device("cpu"))
 
     if cancel_event and cancel_event.is_set():
         del pipeline

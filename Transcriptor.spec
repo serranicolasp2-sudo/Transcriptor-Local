@@ -51,7 +51,6 @@ hidden_imports = [
     'src.exporter',
     'src.player',
     'src.gui',
-    'src.acelerador',
     'src.componentes',
 ]
 
