@@ -11,6 +11,9 @@ import sys
 import time
 import json
 import psutil
+import platform
+import queue
+import subprocess
 import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -33,7 +36,9 @@ from src.config import (
 from src.engine import (
     ejecutar_pipeline_completo,
     verificar_checkpoint,
+    motor_actual,
 )
+from src import componentes
 from src.exporter import (
     exportar_todo,
     reexportar_desde_json,
@@ -64,6 +69,10 @@ class TranscriptorApp(ctk.CTk):
         self.tiempo_inicio_proceso: float = 0.0
         self.ultimo_resultado: Optional[Dict[str, Any]] = None
         self.player = AudioPlayer()
+        self.descarga_cancelar: Optional[threading.Event] = None  # descarga de componente en curso
+        self.eventos_descarga: "queue.Queue[tuple]" = queue.Queue()  # el hilo de descarga avisa por acá
+        self.filas_componentes: Dict[str, Dict[str, Any]] = {}
+        self.protocol("WM_DELETE_WINDOW", self._al_cerrar)
 
         # Configurar grid principal
         self.grid_rowconfigure(1, weight=1)
@@ -73,7 +82,7 @@ class TranscriptorApp(ctk.CTk):
         tema.crear_encabezado(
             self,
             titulo="Transcriptor",
-            subtitulo="Transcripción local con Whisper large-v3-turbo y diarización de 4 hablantes.",
+            subtitulo=f"Transcripción local con Whisper {motor_actual().modelo} y diarización de 4 hablantes.",
             chip="100% LOCAL",
         ).grid(row=0, column=0, padx=22, pady=(16, 4), sticky="ew")
 
@@ -858,27 +867,26 @@ class TranscriptorApp(ctk.CTk):
     def _setup_tab_config(self):
         tab = self.tab_config
         tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
+        # Desplazable: con la tarjeta de modelos no entra entera en la altura mínima de la ventana.
+        cont = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        cont.grid(row=0, column=0, sticky="nsew")
+        cont.grid_columnconfigure(0, weight=1)
 
-        # Card 1: Motor y Hardware
-        card_sys = ctk.CTkFrame(tab, corner_radius=12, border_width=1)
+        # Card 1: Motor y Hardware (detectado en esta PC)
+        card_sys = ctk.CTkFrame(cont, corner_radius=12, border_width=1)
         card_sys.grid(row=0, column=0, padx=15, pady=10, sticky="ew")
         card_sys.grid_columnconfigure((0, 1), weight=1)
 
-        ctk.CTkLabel(card_sys, text="Especificaciones del Motor y Hardware", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=2, padx=15, pady=(12, 8), sticky="w")
+        ctk.CTkLabel(card_sys, text="Motor y Hardware de esta PC", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=2, padx=15, pady=(12, 8), sticky="w")
+        ctk.CTkLabel(card_sys, text=self._texto_motor_y_hardware(), justify="left", font=ctk.CTkFont(size=12)).grid(row=1, column=0, columnspan=2, padx=15, pady=(0, 12), sticky="w")
 
-        info_text = (
-            "• Modelo Whisper: large-v3-turbo (CTranslate2, int8, VAD activo)\n"
-            "• Modelo Diarización: pyannote/speaker-diarization-community-1 (4 hablantes)\n"
-            "• Backend: CPU (AMD Ryzen 7 5700X3D, 8 núcleos / 16 hilos)\n"
-            "• Memoria RAM: 32 GB (Consumo estimado: ~11 GB)\n"
-            "• Factor de Tiempo Real (RTF): ~0.96x (Validado con Prueba.mp3)\n"
-            "• Diseño y Tema Visual: Tu Tiendita IA (Sitio web oficial: tutiendita-ia.store)"
-        )
-        ctk.CTkLabel(card_sys, text=info_text, justify="left", font=ctk.CTkFont(size=12)).grid(row=1, column=0, columnspan=2, padx=15, pady=(0, 12), sticky="w")
+        # Card 2: Modelos y aceleración (descargas desde la app)
+        self._crear_card_componentes(cont).grid(row=1, column=0, padx=15, pady=10, sticky="ew")
 
-        # Card 2: Hugging Face Token
-        card_token = ctk.CTkFrame(tab, corner_radius=12, border_width=1)
-        card_token.grid(row=1, column=0, padx=15, pady=10, sticky="ew")
+        # Card 3: Hugging Face Token
+        card_token = ctk.CTkFrame(cont, corner_radius=12, border_width=1)
+        card_token.grid(row=2, column=0, padx=15, pady=10, sticky="ew")
         card_token.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(card_token, text="Token de Hugging Face (Seguro, local en .env)", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=3, padx=15, pady=(12, 6), sticky="w")
@@ -901,9 +909,9 @@ class TranscriptorApp(ctk.CTk):
         btn_save_token = ctk.CTkButton(card_token, text="Guardar en .env", width=120, command=self._guardar_nuevo_token)
         btn_save_token.grid(row=2, column=2, padx=(5, 15), pady=(0, 12))
 
-        # Card 3: Carpetas de Trabajo
-        card_dirs = ctk.CTkFrame(tab, corner_radius=12, border_width=1)
-        card_dirs.grid(row=2, column=0, padx=15, pady=10, sticky="ew")
+        # Card 4: Carpetas de Trabajo
+        card_dirs = ctk.CTkFrame(cont, corner_radius=12, border_width=1)
+        card_dirs.grid(row=3, column=0, padx=15, pady=10, sticky="ew")
         card_dirs.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         ctk.CTkLabel(card_dirs, text="Carpetas del Proyecto", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=4, padx=15, pady=(12, 10), sticky="w")
@@ -912,6 +920,22 @@ class TranscriptorApp(ctk.CTk):
         ctk.CTkButton(card_dirs, text="📂 Carpeta Output", height=32, command=lambda: os.startfile(str(OUTPUT_DIR))).grid(row=1, column=1, padx=8, pady=(0, 14), sticky="ew")
         ctk.CTkButton(card_dirs, text="📂 Carpeta Modelos", height=32, command=lambda: os.startfile(str(MODELS_DIR))).grid(row=1, column=2, padx=8, pady=(0, 14), sticky="ew")
         ctk.CTkButton(card_dirs, text="📂 Carpeta Logs", height=32, command=lambda: os.startfile(str(LOGS_DIR))).grid(row=1, column=3, padx=8, pady=(0, 14), sticky="ew")
+
+    def _texto_motor_y_hardware(self) -> str:
+        nucleos = psutil.cpu_count(logical=False) or "?"
+        hilos = psutil.cpu_count(logical=True) or "?"
+        ram = psutil.virtual_memory().total / (1024**3)
+        placa = _nombre_placa_nvidia() if componentes.placas_nvidia() else "no detectada"
+        return (
+            f"• En uso: Whisper {motor_actual().descripcion} (VAD activo)\n"
+            "• Diarización: pyannote/speaker-diarization-community-1 en CPU (hasta 4 hablantes)\n"
+            f"• Procesador: {_nombre_procesador()} ({nucleos} núcleos / {hilos} hilos)\n"
+            f"• Memoria RAM: {ram:.0f} GB\n"
+            f"• Placa NVIDIA: {placa}\n"
+            "• Referencia medida: en un Ryzen 7 5700X3D con 32 GB, large-v3-turbo en CPU tarda ~0,96× la\n"
+            "   duración del audio y usa ~11 GB de RAM.\n"
+            "• Diseño y Tema Visual: Tu Tiendita IA (Sitio web oficial: tutiendita-ia.store)"
+        )
 
     def _guardar_nuevo_token(self):
         t = self.entry_new_token.get().strip()
@@ -927,6 +951,257 @@ class TranscriptorApp(ctk.CTk):
             messagebox.showinfo("Token Guardado", "El token se guardó correctamente en el archivo .env.")
         else:
             messagebox.showerror("Error", "No se pudo guardar el archivo .env.")
+
+    # =========================================================================
+    # MODELOS Y ACELERACIÓN (descargas desde la app, ver src/componentes.py)
+    # =========================================================================
+    def _crear_card_componentes(self, padre) -> ctk.CTkFrame:
+        card = ctk.CTkFrame(padre, corner_radius=12, border_width=1)
+        card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(card, text="Modelos y Aceleración", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=3, padx=15, pady=(12, 0), sticky="w")
+        ctk.CTkLabel(
+            card,
+            text="La versión estándar ya viene instalada. Lo demás se descarga gratis desde acá (Hugging Face y PyPI),\n"
+                 "se verifica que llegue sano y se usa después de reiniciar. Si se corta, sigue desde donde quedó.",
+            justify="left", font=ctk.CTkFont(size=12), text_color=tema.PLATA,
+        ).grid(row=1, column=0, columnspan=3, padx=15, pady=(2, 10), sticky="w")
+
+        fila = 2
+        self._fila_componente(card, fila, None)
+        for c in componentes.CATALOGO:
+            fila += 1
+            self._fila_componente(card, fila, c)
+
+        # Qué usar al abrir la app
+        opciones = ctk.CTkFrame(card, fg_color="transparent")
+        opciones.grid(row=fila + 1, column=0, columnspan=3, padx=15, pady=(10, 4), sticky="ew")
+        ctk.CTkLabel(opciones, text="Modelo a usar:").pack(side="left")
+        self.menu_modelo = ctk.CTkOptionMenu(opciones, values=componentes.modelos_disponibles(), width=170, command=self._elegir_modelo)
+        self.menu_modelo.pack(side="left", padx=(8, 24))
+        self.switch_gpu = ctk.CTkSwitch(opciones, text="Usar la placa NVIDIA", command=self._elegir_gpu)
+        self.switch_gpu.pack(side="left")
+        self.lbl_motivo_gpu = ctk.CTkLabel(card, text="", font=ctk.CTkFont(size=11), text_color=tema.PLATA, justify="left")
+        self.lbl_motivo_gpu.grid(row=fila + 2, column=0, columnspan=3, padx=15, pady=(0, 2), sticky="w")
+        ctk.CTkLabel(
+            card,
+            text="Placas AMD Radeon: en evaluación. El motor ya tiene una versión para ROCm, pero todavía da errores en algunas placas.",
+            font=ctk.CTkFont(size=11), text_color=tema.TEXT_DIM, justify="left",
+        ).grid(row=fila + 3, column=0, columnspan=3, padx=15, pady=(0, 8), sticky="w")
+
+        # Aviso de reinicio (aparece cuando hay un cambio pendiente)
+        self.frame_reinicio = ctk.CTkFrame(card, corner_radius=10, border_width=1, border_color=tema.YEMA, fg_color=tema.EXITO_BG)
+        self.frame_reinicio.grid_columnconfigure(0, weight=1)
+        self.lbl_reinicio = ctk.CTkLabel(self.frame_reinicio, text="", text_color=tema.YEMA, font=ctk.CTkFont(size=12, weight="bold"), justify="left")
+        self.lbl_reinicio.grid(row=0, column=0, padx=12, pady=10, sticky="w")
+        ctk.CTkButton(
+            self.frame_reinicio, text="Reiniciar ahora", width=130, height=32,
+            fg_color=tema.YEMA, hover_color=tema.YEMA_HOVER, text_color=tema.CINTA, command=self._reiniciar,
+        ).grid(row=0, column=1, padx=12, pady=10)
+        self._fila_reinicio = fila + 4
+
+        self._refrescar_componentes()
+        return card
+
+    def _fila_componente(self, card, fila: int, c: Optional[componentes.Componente]):
+        marco = ctk.CTkFrame(card, corner_radius=10, fg_color=tema.CHIP_BG)
+        marco.grid(row=fila, column=0, columnspan=3, padx=15, pady=4, sticky="ew")
+        marco.grid_columnconfigure(0, weight=1)
+        if c is None:
+            titulo, descripcion = "Whisper large-v3-turbo · Estándar", "Equilibrio entre velocidad y precisión. Viene con la aplicación."
+        else:
+            titulo, descripcion = f"{c.nombre} · {_tamano(c.tamano_descarga)}", c.descripcion
+        ctk.CTkLabel(marco, text=titulo, font=ctk.CTkFont(size=12, weight="bold")).grid(row=0, column=0, padx=12, pady=(8, 0), sticky="w")
+        ctk.CTkLabel(marco, text=descripcion, font=ctk.CTkFont(size=11), text_color=tema.PLATA).grid(row=1, column=0, padx=12, pady=(0, 8), sticky="w")
+        estado = ctk.CTkLabel(marco, text="", font=ctk.CTkFont(size=11), text_color=tema.YEMA)
+        estado.grid(row=0, column=1, rowspan=2, padx=8)
+        if c is None:
+            en_uso = motor_actual().modelo == componentes.MODELO_ESTANDAR
+            estado.configure(text="Incluido · En uso" if en_uso else "Incluido")
+            return
+        boton = ctk.CTkButton(marco, text="", width=110, height=30, command=lambda c=c: self._accion_componente(c))
+        boton.grid(row=0, column=2, rowspan=2, padx=(4, 12), pady=8)
+        barra = ctk.CTkProgressBar(marco, height=8, progress_color=tema.YEMA)
+        barra.set(0)
+        detalle = ctk.CTkLabel(marco, text="", font=ctk.CTkFont(size=11), text_color=tema.PLATA)
+        self.filas_componentes[c.id] = {"estado": estado, "boton": boton, "barra": barra, "detalle": detalle, "inicio": 0.0}
+
+    def _refrescar_componentes(self):
+        descargando = self.descarga_cancelar is not None
+        sin_gpu = componentes.motivo_sin_gpu()
+        for c in componentes.CATALOGO:
+            f = self.filas_componentes[c.id]
+            instalado = componentes.esta_instalado(c)
+            if instalado:
+                en_uso = (c.tipo == "modelo" and motor_actual().modelo == c.modelo) or (
+                    c.tipo == "aceleracion" and motor_actual().dispositivo == "cuda")
+                f["estado"].configure(text="En uso" if en_uso else "Instalado", text_color=tema.YEMA)
+                f["boton"].configure(text="Eliminar", fg_color=tema.PELIGRO_FG, hover_color=tema.PELIGRO_HOVER,
+                                     text_color=tema.MALVON_SUAVE, state="disabled" if descargando else "normal")
+            else:
+                no_aplica = c.tipo == "aceleracion" and bool(sin_gpu) and componentes.placas_nvidia() == 0
+                a_medias = componentes.bajado_a_medias(c)
+                if no_aplica:
+                    texto_estado = "No compatible"
+                elif a_medias:
+                    texto_estado = f"En pausa · {_tamano(a_medias)} bajados"
+                else:
+                    texto_estado = ""
+                f["estado"].configure(text=texto_estado, text_color=tema.PLATA)
+                f["boton"].configure(text="Seguir" if a_medias else "Descargar", fg_color=tema.BIROME, hover_color=tema.BIROME_HOVER,
+                                     text_color=tema.PAPEL, state="disabled" if (descargando or no_aplica) else "normal")
+        self.menu_modelo.configure(values=componentes.modelos_disponibles())
+        ajustes = componentes.leer_ajustes()
+        self.menu_modelo.set(ajustes["modelo_whisper"] if ajustes["modelo_whisper"] in componentes.modelos_disponibles() else componentes.MODELO_ESTANDAR)
+        if componentes.esta_instalado(componentes.NVIDIA) and not sin_gpu:
+            self.switch_gpu.configure(state="normal")
+            self.switch_gpu.select() if ajustes["usar_gpu"] else self.switch_gpu.deselect()
+            self.lbl_motivo_gpu.configure(text="")
+        else:
+            self.switch_gpu.deselect()
+            self.switch_gpu.configure(state="disabled")
+            self.lbl_motivo_gpu.configure(text=sin_gpu or "Descargá la Aceleración NVIDIA para activarla.")
+        self._actualizar_aviso_reinicio()
+
+    def _cambios_pendientes(self) -> list:
+        """Qué cambia al reiniciar: lo elegido en Configuración contra lo que está usando este proceso."""
+        proximo = componentes.elegir_motor()
+        actual = motor_actual()
+        cambios = []
+        if proximo.modelo != actual.modelo:
+            cambios.append(f"modelo {proximo.modelo}")
+        if proximo.dispositivo != actual.dispositivo:
+            cambios.append("placa NVIDIA" if proximo.dispositivo == "cuda" else "procesador (CPU)")
+        return cambios
+
+    def _actualizar_aviso_reinicio(self):
+        cambios = self._cambios_pendientes()
+        if cambios:
+            self.lbl_reinicio.configure(text=f"Al reiniciar se va a usar: {', '.join(cambios)}.")
+            self.frame_reinicio.grid(row=self._fila_reinicio, column=0, columnspan=3, padx=15, pady=(4, 14), sticky="ew")
+        else:
+            self.frame_reinicio.grid_remove()
+
+    def _elegir_modelo(self, modelo: str):
+        componentes.guardar_ajustes(modelo_whisper=modelo)
+        self._refrescar_componentes()
+
+    def _elegir_gpu(self):
+        componentes.guardar_ajustes(usar_gpu=bool(self.switch_gpu.get()))
+        self._refrescar_componentes()
+
+    def _accion_componente(self, c: componentes.Componente):
+        if self.descarga_cancelar is not None:
+            self.descarga_cancelar.set()  # el botón de la fila en curso funciona como "Cancelar"
+            return
+        if componentes.esta_instalado(c):
+            self._eliminar_componente(c)
+        else:
+            self._descargar_componente(c)
+
+    def _descargar_componente(self, c: componentes.Componente):
+        self.descarga_cancelar = threading.Event()
+        self._refrescar_componentes()
+        f = self.filas_componentes[c.id]
+        f["boton"].configure(text="Cancelar", state="normal", fg_color=tema.PELIGRO_FG, hover_color=tema.PELIGRO_HOVER, text_color=tema.MALVON_SUAVE)
+        f["estado"].configure(text="Descargando…", text_color=tema.YEMA)
+        f["barra"].set(0)
+        f["barra"].grid(row=2, column=0, columnspan=3, padx=12, pady=(0, 2), sticky="ew")
+        f["detalle"].configure(text="Conectando…")
+        f["detalle"].grid(row=3, column=0, columnspan=3, padx=12, pady=(0, 8), sticky="w")
+        f["inicio"] = time.monotonic()
+        cancelar = self.descarga_cancelar
+        eventos = self.eventos_descarga
+
+        def trabajo():
+            # Este hilo no toca la ventana: deja avisos en la cola y _atender_descarga los muestra.
+            try:
+                componentes.instalar(c, lambda hecho, total: eventos.put(("progreso", c.id, hecho, total)), cancelar)
+                eventos.put(("fin", c, None))
+            except componentes.DescargaCancelada:
+                eventos.put(("fin", c, "cancelada"))
+            except Exception as e:
+                eventos.put(("fin", c, str(e)))
+
+        threading.Thread(target=trabajo, daemon=True).start()
+        self.after(100, self._atender_descarga)
+
+    def _atender_descarga(self):
+        try:
+            while True:
+                evento = self.eventos_descarga.get_nowait()
+                if evento[0] == "progreso":
+                    self._mostrar_progreso_descarga(*evento[1:])
+                else:
+                    self._descarga_terminada(*evento[1:])
+                    return
+        except queue.Empty:
+            pass
+        self.after(100, self._atender_descarga)
+
+    def _mostrar_progreso_descarga(self, id_componente: str, hecho: int, total: int):
+        f = self.filas_componentes[id_componente]
+        f["barra"].set(hecho / total if total else 0)
+        transcurrido = max(time.monotonic() - f["inicio"], 0.1)
+        velocidad = hecho / transcurrido
+        texto = f"{_tamano(hecho)} de {_tamano(total)} · {velocidad / 1e6:.1f} MB/s".replace(".", ",")
+        if velocidad > 0 and hecho < total:
+            texto += f" · quedan ~{formatear_tiempo((total - hecho) / velocidad)}"
+        f["detalle"].configure(text=texto)
+
+    def _descarga_terminada(self, c: componentes.Componente, error: Optional[str]):
+        self.descarga_cancelar = None
+        f = self.filas_componentes[c.id]
+        f["barra"].grid_remove()
+        f["detalle"].grid_remove()
+        if error is None:
+            # Se descargó para usarlo: queda elegido para el próximo inicio.
+            if c.tipo == "modelo":
+                componentes.guardar_ajustes(modelo_whisper=c.modelo)
+            else:
+                componentes.guardar_ajustes(usar_gpu=True)
+            self._refrescar_componentes()
+            if messagebox.askyesno(
+                "Descarga completa",
+                f"{c.nombre} quedó instalado.\n\nPara usarlo hay que reiniciar la aplicación. ¿Reiniciar ahora?",
+            ):
+                self._reiniciar()
+            return
+        self._refrescar_componentes()
+        if error != "cancelada":  # la pausa ya la muestra _refrescar_componentes, con lo bajado
+            f["estado"].configure(text="Error", text_color=tema.MALVON_SUAVE)
+            messagebox.showerror("No se pudo descargar", error)
+
+    def _eliminar_componente(self, c: componentes.Componente):
+        if not messagebox.askyesno("Eliminar", f"¿Eliminar {c.nombre}? Libera {_tamano(c.tamano_descarga)} y se puede volver a descargar."):
+            return
+        componentes.eliminar(c)
+        if c.tipo == "modelo" and componentes.leer_ajustes()["modelo_whisper"] == c.modelo:
+            componentes.guardar_ajustes(modelo_whisper=componentes.MODELO_ESTANDAR)
+        self._refrescar_componentes()
+
+    def _reiniciar(self):
+        if self.is_processing:
+            messagebox.showwarning("Transcripción en curso", "Esperá a que termine (o cancelala) y reiniciá desde Configuración.")
+            return
+        if self.descarga_cancelar is not None:
+            if not messagebox.askyesno("Descarga en curso", "Hay una descarga en curso: se pausa y sigue la próxima vez. ¿Reiniciar igual?"):
+                return
+            self.descarga_cancelar.set()
+        try:
+            flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+            subprocess.Popen(componentes.comando_reinicio(), cwd=str(BASE_DIR), env=componentes.entorno_reinicio(), creationflags=flags)
+        except OSError as e:
+            messagebox.showerror("No se pudo reiniciar", f"Cerrá y volvé a abrir la aplicación a mano.\n\n{e}")
+            return
+        self.destroy()
+
+    def _al_cerrar(self):
+        if self.descarga_cancelar is not None:
+            if not messagebox.askyesno("Descarga en curso", "Si cerrás, la descarga se pausa y sigue desde donde quedó la próxima vez. ¿Cerrar?"):
+                return
+            self.descarga_cancelar.set()
+        self.destroy()
 
     # =========================================================================
     # MONITOR DE RECURSOS EN VIVO
@@ -951,6 +1226,36 @@ class TranscriptorApp(ctk.CTk):
             self.lbl_m_ram.configure(text=f"{used_gb:.1f} GB / {total_gb:.0f} GB")
         except Exception:
             pass
+
+
+def _tamano(n: int) -> str:
+    return f"{n / 1e9:.1f} GB".replace(".", ",") if n >= 1e9 else f"{n / 1e6:.0f} MB"
+
+
+def _nombre_procesador() -> str:
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
+                return winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
+        except OSError:
+            pass
+    return platform.processor() or "desconocido"
+
+
+def _nombre_placa_nvidia() -> str:
+    try:
+        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5, creationflags=flags,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip().splitlines()[0]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "detectada"
 
 
 def main():
